@@ -1,0 +1,14 @@
+# Compiled executable
+TUNTray.exe
+
+# Build output directory
+/build/
+
+# Intermediate object files for Windows resources
+*.syso
+
+# Log files
+*.log
+
+# Runtime configuration file
+config.json
