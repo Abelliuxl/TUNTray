@@ -13,6 +13,10 @@
 -   通过图形界面添加和删除代理服务器。
 -   程序启动时自动请求管理员权限。
 
+## 演示 (Demo)
+
+![应用操作演示](assets/app-demo.gif)
+
 ## 文件结构
 
 ```
@@ -102,6 +106,10 @@ This project is essentially a user-friendly wrapper, with the core functionality
 -   Select from a preset list of proxy servers.
 -   Add and remove proxy servers through a graphical interface.
 -   Automatically requests administrator privileges on startup.
+
+## Demo
+
+![Application Demo](assets/app-demo.gif)
 
 ## File Structure
 
