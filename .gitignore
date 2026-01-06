@@ -12,3 +12,10 @@ TUNTray.exe
 
 # Runtime configuration file
 config.json
+
+# Release packages
+*.zip
+TUNTray.zip
+
+# Claude Code working directory
+.claude/
