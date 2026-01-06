@@ -24,6 +24,7 @@ type Language int
 const (
 	Chinese Language = iota
 	English
+	Unset Language = 255 // Special value to indicate language is not set
 )
 
 // String returns the string representation of the language
@@ -52,6 +53,8 @@ var Translations = LanguageMap{
 		"add_new_proxy":    "添加新代理...",
 		"delete_proxy":     "删除代理",
 		"language":         "语言",
+		"chinese":          "中文",
+		"english":          "English",
 		"quit":             "退出",
 
 		// Tooltips and titles
@@ -125,6 +128,8 @@ var Translations = LanguageMap{
 		"add_new_proxy":    "Add New Proxy...",
 		"delete_proxy":     "Delete Proxy",
 		"language":         "Language",
+		"chinese":          "中文",
+		"english":          "English",
 		"quit":             "Quit",
 
 		// Tooltips and titles

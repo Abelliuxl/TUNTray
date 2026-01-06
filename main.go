@@ -38,18 +38,33 @@ type AppConfig struct {
 }
 
 // initializeLanguage sets up the language based on config or system default
-func initializeLanguage() {
+func initializeLanguage(configLoaded bool) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// If language is not set in config, use system default
-	if appConfig.Language == 0 {
-		appConfig.Language = GetSystemLanguage()
+	log.Printf("Initializing language. Config language: %v, configLoaded: %v\n", appConfig.Language, configLoaded)
+
+	// If language is not set in config (Unset), default to English
+	if appConfig.Language == Unset {
+		log.Println("Language not set in config, defaulting to English...")
+		appConfig.Language = English  // Default to English
 		SetLanguage(appConfig.Language)
 		saveConfig()
+		log.Printf("Default language set to: %v\n", appConfig.Language)
 	} else {
 		SetLanguage(appConfig.Language)
+		log.Printf("Language loaded from config: %v\n", appConfig.Language)
 	}
+
+	// For existing configs that don't have language field, we can't detect it
+	// So we assume language=0 means Chinese was intentionally chosen
+	// If you want to force English for all existing users, uncomment the following:
+	// if configLoaded && appConfig.Language == Chinese {
+	//     log.Println("Existing config detected, defaulting to English for all users...")
+	//     appConfig.Language = English
+	//     SetLanguage(appConfig.Language)
+	//     saveConfig()
+	// }
 }
 
 // --- Global State ---
@@ -62,6 +77,10 @@ var (
 	mStop                *systray.MenuItem
 	mSelectProxy         *systray.MenuItem
 	mDeleteProxy         *systray.MenuItem
+	mManageProxies       *systray.MenuItem
+	mAddNewProxy         *systray.MenuItem
+	mQuit                *systray.MenuItem
+	mLanguage            *systray.MenuItem
 	proxyMenuItems       map[string]*systray.MenuItem
 	deleteProxyMenuItems map[string]*systray.MenuItem
 	mu                   sync.RWMutex
@@ -112,10 +131,10 @@ func onReady() {
 
 	systray.SetIcon(iconData)
 
-	loadConfig()
+	configLoaded, _ := loadConfig()
 
 	// Initialize language settings
-	initializeLanguage()
+	initializeLanguage(configLoaded)
 
 	systray.SetTitle(GetText("app_title"))
 	systray.SetTooltip(GetText("app_tooltip"))
@@ -141,8 +160,8 @@ func onReady() {
 	}
 
 	// --- Manage Proxy Menu ---
-	mManageProxies := systray.AddMenuItem(GetText("manage_proxies"), GetText("manage_tooltip"))
-	mAddNewProxy := mManageProxies.AddSubMenuItem(GetText("add_new_proxy"), GetText("add_tooltip"))
+	mManageProxies = systray.AddMenuItem(GetText("manage_proxies"), GetText("manage_tooltip"))
+	mAddNewProxy = mManageProxies.AddSubMenuItem(GetText("add_new_proxy"), GetText("add_tooltip"))
 	mDeleteProxy = mManageProxies.AddSubMenuItem(GetText("delete_proxy"), GetText("delete_tooltip"))
 	deleteProxyMenuItems = make(map[string]*systray.MenuItem)
 	if len(proxies) > 0 {
@@ -165,32 +184,11 @@ func onReady() {
 	systray.AddSeparator()
 
 	// --- Language Menu ---
-	mLanguage := systray.AddMenuItem(GetText("language"), "Switch language")
-	mLanguageChinese := mLanguage.AddSubMenuItem("中文", "Switch to Chinese")
-	mLanguageEnglish := mLanguage.AddSubMenuItem("English", "Switch to English")
-
-	// Set initial language checkmark
-	go func() {
-		for {
-			select {
-			case <-mLanguageChinese.ClickedCh:
-				SetLanguage(Chinese)
-				appConfig.Language = Chinese
-				saveConfig()
-				zenity.Info(GetText("operation_success"), zenity.Title(GetText("language")))
-				// Note: Application restart required for full language change
-			case <-mLanguageEnglish.ClickedCh:
-				SetLanguage(English)
-				appConfig.Language = English
-				saveConfig()
-				zenity.Info(GetText("operation_success"), zenity.Title(GetText("language")))
-				// Note: Application restart required for full language change
-			}
-		}
-	}()
+	_, languageSubMenus := createLanguageMenu()
+	go handleLanguageSelection(languageSubMenus)
 
 	systray.AddSeparator()
-	mQuit := systray.AddMenuItem(GetText("quit"), "Quit program")
+	mQuit = systray.AddMenuItem(GetText("quit"), "Quit program")
 
 	mStop.Disable()
 
@@ -428,7 +426,7 @@ func deleteProxy(proxyAddr string) {
 
 // --- File I/O for Config ---
 
-func loadConfig() {
+func loadConfig() (bool, error) {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -438,9 +436,11 @@ func loadConfig() {
 		if err := json.Unmarshal(data, &appConfig); err == nil {
 			log.Println(GetText("config_load_success"))
 			proxies = appConfig.Proxies // Sync the convenience slice
-			return
+			// Config loaded successfully, check if language field was present
+			return true, nil
 		}
 		log.Printf(GetText("config_parse_fail")+"\n", err)
+		return false, err
 	}
 
 	// If config.json doesn't exist or is corrupt, try to migrate from proxies.json
@@ -451,11 +451,12 @@ func loadConfig() {
 		if json.Unmarshal(data, &oldProxies) == nil && len(oldProxies) > 0 {
 			appConfig.Proxies = oldProxies
 			appConfig.LastSelectedProxy = oldProxies[0] // Default to first
+			appConfig.Language = Unset                 // New config, language not set
 			proxies = appConfig.Proxies
 			saveConfig()              // Save as new config.json
 			os.Remove(oldProxiesFile) // Clean up old file
 			log.Println(GetText("migration_success"))
-			return
+			return false, nil
 		}
 	}
 
@@ -465,8 +466,10 @@ func loadConfig() {
 	if len(appConfig.Proxies) > 0 {
 		appConfig.LastSelectedProxy = appConfig.Proxies[0]
 	}
+	appConfig.Language = Unset // New config, language not set
 	proxies = appConfig.Proxies
 	saveConfig()
+	return false, nil
 }
 
 func saveConfig() {
@@ -615,4 +618,108 @@ func logPipe(pipe io.ReadCloser, prefix string) {
 	for scanner.Scan() {
 		log.Printf("[%s] %s\n", prefix, scanner.Text())
 	}
+}
+
+// createLanguageMenu creates the language selection menu and returns menu items
+func createLanguageMenu() (*systray.MenuItem, map[Language]*systray.MenuItem) {
+	// Remove old language menu if it exists (for refresh)
+	// Note: systray doesn't support removing items, so we just create new ones
+	// The old menu will be garbage collected when the program restarts
+
+	// Create the main language menu
+	mLanguage = systray.AddMenuItem(GetText("language"), "Switch language")
+	mLanguageChinese := mLanguage.AddSubMenuItem(GetText("chinese"), "Switch to Chinese")
+	mLanguageEnglish := mLanguage.AddSubMenuItem(GetText("english"), "Switch to English")
+
+	subMenus := map[Language]*systray.MenuItem{
+		Chinese:  mLanguageChinese,
+		English: mLanguageEnglish,
+	}
+
+	// Update checkmarks based on current language
+	updateLanguageCheckmarks(subMenus)
+
+	return mLanguage, subMenus
+}
+
+// handleLanguageSelection handles language selection events
+func handleLanguageSelection(subMenus map[Language]*systray.MenuItem) {
+	for {
+		select {
+		case <-subMenus[Chinese].ClickedCh:
+			log.Println("Language switch requested: Chinese")
+			SetLanguage(Chinese)
+			appConfig.Language = Chinese
+			saveConfig()
+			log.Printf("Language switched to Chinese, config updated. Current language: %v\n", GetCurrentLanguage())
+			updateLanguageCheckmarks(subMenus)
+			refreshUITexts()
+			zenity.Info(GetText("operation_success"), zenity.Title(GetText("language")))
+		case <-subMenus[English].ClickedCh:
+			log.Println("Language switch requested: English")
+			SetLanguage(English)
+			appConfig.Language = English
+			saveConfig()
+			log.Printf("Language switched to English, config updated. Current language: %v\n", GetCurrentLanguage())
+			updateLanguageCheckmarks(subMenus)
+			refreshUITexts()
+			zenity.Info(GetText("operation_success"), zenity.Title(GetText("language")))
+		}
+	}
+}
+
+// updateLanguageCheckmarks updates the checkmarks on language menu items
+func updateLanguageCheckmarks(subMenus map[Language]*systray.MenuItem) {
+	currentLang := GetCurrentLanguage()
+	for lang, menu := range subMenus {
+		if lang == currentLang {
+			menu.Check()
+		} else {
+			menu.Uncheck()
+		}
+	}
+}
+
+// refreshUITexts refreshes UI texts that can be updated dynamically
+func refreshUITexts() {
+	log.Println("Refreshing UI texts for new language...")
+
+	// Update main menu items
+	if mStart != nil {
+		mStart.SetTitle(GetText("start"))
+		mStart.SetTooltip(GetText("start_tooltip"))
+	}
+	if mStop != nil {
+		mStop.SetTitle(GetText("stop"))
+		mStop.SetTooltip(GetText("stop_tooltip"))
+	}
+	if mSelectProxy != nil {
+		mSelectProxy.SetTitle(GetText("select_proxy"))
+		mSelectProxy.SetTooltip(GetText("select_tooltip"))
+	}
+	if mDeleteProxy != nil {
+		mDeleteProxy.SetTitle(GetText("delete_proxy"))
+		mDeleteProxy.SetTooltip(GetText("delete_tooltip"))
+	}
+	if mManageProxies != nil {
+		mManageProxies.SetTitle(GetText("manage_proxies"))
+		mManageProxies.SetTooltip(GetText("manage_tooltip"))
+	}
+	if mAddNewProxy != nil {
+		mAddNewProxy.SetTitle(GetText("add_new_proxy"))
+		mAddNewProxy.SetTooltip(GetText("add_tooltip"))
+	}
+	if mQuit != nil {
+		mQuit.SetTitle(GetText("quit"))
+	}
+	if mLanguage != nil {
+		mLanguage.SetTitle(GetText("language"))
+		mLanguage.SetTooltip("Switch language")
+	}
+
+	// Update the title and tooltip of the main app
+	systray.SetTitle(GetText("app_title"))
+	systray.SetTooltip(GetText("app_tooltip"))
+
+	log.Println("UI texts refreshed successfully")
 }
