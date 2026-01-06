@@ -5,6 +5,7 @@ go 1.25.1
 require (
 	github.com/getlantern/systray v1.2.2
 	github.com/ncruces/zenity v0.10.14
+	golang.org/x/text v0.18.0
 )
 
 require (

@@ -34,6 +34,22 @@ const (
 type AppConfig struct {
 	Proxies           []string `json:"proxies"`
 	LastSelectedProxy string   `json:"last_selected_proxy"`
+	Language          Language `json:"language"`
+}
+
+// initializeLanguage sets up the language based on config or system default
+func initializeLanguage() {
+	mu.Lock()
+	defer mu.Unlock()
+
+	// If language is not set in config, use system default
+	if appConfig.Language == 0 {
+		appConfig.Language = GetSystemLanguage()
+		SetLanguage(appConfig.Language)
+		saveConfig()
+	} else {
+		SetLanguage(appConfig.Language)
+	}
 }
 
 // --- Global State ---
@@ -87,25 +103,29 @@ func isElevated() bool {
 
 func onReady() {
 	if !isElevated() {
-		zenity.Error("本程序需要管理员权限才能正常运行。\n请右键点击程序并选择“以管理员身份运行”。",
-			zenity.Title("权限不足"),
+		zenity.Error(GetText("permission_error_msg"),
+			zenity.Title(GetText("permission_error_title")),
 			zenity.ErrorIcon)
 		systray.Quit()
 		return
 	}
 
-	systray.SetTitle("TUNTray")
-	systray.SetTooltip("TUN 流量转发管理")
 	systray.SetIcon(iconData)
 
 	loadConfig()
 
-	mStart = systray.AddMenuItem("启动", "启动 TUN")
-	mStop = systray.AddMenuItem("停止", "停止 TUN")
+	// Initialize language settings
+	initializeLanguage()
+
+	systray.SetTitle(GetText("app_title"))
+	systray.SetTooltip(GetText("app_tooltip"))
+
+	mStart = systray.AddMenuItem(GetText("start"), GetText("start_tooltip"))
+	mStop = systray.AddMenuItem(GetText("stop"), GetText("stop_tooltip"))
 	systray.AddSeparator()
 
 	// --- Select Proxy Menu ---
-	mSelectProxy = systray.AddMenuItem("选择代理", "选择一个代理服务器")
+	mSelectProxy = systray.AddMenuItem(GetText("select_proxy"), GetText("select_tooltip"))
 	proxyMenuItems = make(map[string]*systray.MenuItem)
 	for _, p := range proxies {
 		item := mSelectProxy.AddSubMenuItem(p, p)
@@ -121,9 +141,9 @@ func onReady() {
 	}
 
 	// --- Manage Proxy Menu ---
-	mManageProxies := systray.AddMenuItem("管理代理", "添加或删除代理")
-	mAddNewProxy := mManageProxies.AddSubMenuItem("添加新代理...", "添加一个新的代理地址")
-	mDeleteProxy = mManageProxies.AddSubMenuItem("删除代理", "删除一个现有的代理地址")
+	mManageProxies := systray.AddMenuItem(GetText("manage_proxies"), GetText("manage_tooltip"))
+	mAddNewProxy := mManageProxies.AddSubMenuItem(GetText("add_new_proxy"), GetText("add_tooltip"))
+	mDeleteProxy = mManageProxies.AddSubMenuItem(GetText("delete_proxy"), GetText("delete_tooltip"))
 	deleteProxyMenuItems = make(map[string]*systray.MenuItem)
 	if len(proxies) > 0 {
 		for _, p := range proxies {
@@ -143,7 +163,34 @@ func onReady() {
 	}
 
 	systray.AddSeparator()
-	mQuit := systray.AddMenuItem("退出", "退出程序")
+
+	// --- Language Menu ---
+	mLanguage := systray.AddMenuItem(GetText("language"), "Switch language")
+	mLanguageChinese := mLanguage.AddSubMenuItem("中文", "Switch to Chinese")
+	mLanguageEnglish := mLanguage.AddSubMenuItem("English", "Switch to English")
+
+	// Set initial language checkmark
+	go func() {
+		for {
+			select {
+			case <-mLanguageChinese.ClickedCh:
+				SetLanguage(Chinese)
+				appConfig.Language = Chinese
+				saveConfig()
+				zenity.Info(GetText("operation_success"), zenity.Title(GetText("language")))
+				// Note: Application restart required for full language change
+			case <-mLanguageEnglish.ClickedCh:
+				SetLanguage(English)
+				appConfig.Language = English
+				saveConfig()
+				zenity.Info(GetText("operation_success"), zenity.Title(GetText("language")))
+				// Note: Application restart required for full language change
+			}
+		}
+	}()
+
+	systray.AddSeparator()
+	mQuit := systray.AddMenuItem(GetText("quit"), "Quit program")
 
 	mStop.Disable()
 
@@ -188,22 +235,22 @@ func onReady() {
 }
 
 func handleStart() {
-	log.Println("启动 TUN...")
+	log.Println(GetText("log_starting"))
 	if err := startTun(); err != nil {
-		log.Printf("启动失败: %v\n", err)
+		log.Printf(GetText("start_fail")+": %v\n", err)
 	} else {
-		log.Println("启动成功")
+		log.Println(GetText("start_success"))
 		mStart.Disable()
 		mStop.Enable()
 	}
 }
 
 func handleStop() {
-	log.Println("停止 TUN...")
+	log.Println(GetText("log_stopping"))
 	if err := stopTun(); err != nil {
-		log.Printf("停止失败: %v\n", err)
+		log.Printf(GetText("stop_fail")+": %v\n", err)
 	} else {
-		log.Println("停止成功")
+		log.Println(GetText("stop_success"))
 		mStop.Disable()
 		mStart.Enable()
 	}
@@ -238,7 +285,7 @@ func setProxy(proxyAddr string) {
 	appConfig.LastSelectedProxy = proxyAddr
 	saveConfig() // Save config while holding the lock
 
-	log.Printf("切换代理到: %s\n", currentProxy)
+	log.Printf(GetText("log_proxy_switch")+"\n", currentProxy)
 
 	// Update checkmarks
 	for proxy, item := range proxyMenuItems {
@@ -251,22 +298,22 @@ func setProxy(proxyAddr string) {
 }
 
 func addNewProxy() {
-	newProxy, err := zenity.Entry("请输入新的代理地址:",
-		zenity.Title("添加新代理"),
+	newProxy, err := zenity.Entry(GetText("add_proxy_prompt"),
+		zenity.Title(GetText("add_proxy_title")),
 		zenity.EntryText(""))
 	if err != nil {
 		if err == zenity.ErrCanceled {
-			log.Println("用户取消了添加代理。")
+			log.Println(GetText("user_cancelled"))
 		} else {
-			log.Printf("无法打开输入框: %v\n", err)
+			log.Printf(GetText("cannot_open_input")+"\n", err)
 		}
 		return
 	}
 
 	newProxy = strings.TrimSpace(newProxy)
 	if newProxy == "" {
-		log.Println("输入的代理地址为空。")
-		zenity.Warning("代理地址不能为空。", zenity.Title("输入无效"))
+		log.Println(GetText("proxy_empty_error"))
+		zenity.Warning(GetText("proxy_empty_error"), zenity.Title(GetText("input_invalid")))
 		return
 	}
 
@@ -276,8 +323,8 @@ func addNewProxy() {
 	// Check for duplicates
 	for _, p := range appConfig.Proxies {
 		if p == newProxy {
-			log.Printf("代理 '%s' 已存在。", newProxy)
-			zenity.Warning("该代理地址已存在。", zenity.Title("添加失败"))
+			log.Printf(GetText("proxy_exists_error")+" ", newProxy)
+			zenity.Warning(GetText("proxy_exists_error"), zenity.Title(GetText("add_proxy_failed")))
 			return
 		}
 	}
@@ -313,8 +360,8 @@ func addNewProxy() {
 		}
 	}(newProxy, itemDelete)
 
-	log.Printf("代理 '%s' 已添加, 菜单已更新。", newProxy)
-	zenity.Info("代理已成功添加。", zenity.Title("操作成功"))
+	log.Printf(GetText("log_proxy_added")+"", newProxy)
+	zenity.Info(GetText("add_proxy_success"), zenity.Title(GetText("operation_success")))
 }
 
 func deleteProxy(proxyAddr string) {
@@ -366,7 +413,7 @@ func deleteProxy(proxyAddr string) {
 		} else {
 			currentProxy = ""
 			appConfig.LastSelectedProxy = ""
-			log.Println("所有代理均已删除。")
+			log.Println(GetText("log_all_proxies_deleted"))
 		}
 	}
 
@@ -376,7 +423,7 @@ func deleteProxy(proxyAddr string) {
 		mDeleteProxy.Disable()
 	}
 
-	log.Printf("代理 '%s' 已删除, 菜单已更新。", proxyAddr)
+	log.Printf(GetText("log_proxy_deleted")+"", proxyAddr)
 }
 
 // --- File I/O for Config ---
@@ -389,17 +436,17 @@ func loadConfig() {
 	data, err := os.ReadFile(configFile)
 	if err == nil {
 		if err := json.Unmarshal(data, &appConfig); err == nil {
-			log.Println("已成功加载 config.json。")
+			log.Println(GetText("config_load_success"))
 			proxies = appConfig.Proxies // Sync the convenience slice
 			return
 		}
-		log.Printf("解析 config.json 失败: %v。将尝试迁移或创建默认配置。", err)
+		log.Printf(GetText("config_parse_fail")+"\n", err)
 	}
 
 	// If config.json doesn't exist or is corrupt, try to migrate from proxies.json
 	data, err = os.ReadFile(oldProxiesFile)
 	if err == nil {
-		log.Println("找到旧的 proxies.json，正在迁移...")
+		log.Println(GetText("migration_start"))
 		var oldProxies []string
 		if json.Unmarshal(data, &oldProxies) == nil && len(oldProxies) > 0 {
 			appConfig.Proxies = oldProxies
@@ -407,13 +454,13 @@ func loadConfig() {
 			proxies = appConfig.Proxies
 			saveConfig()              // Save as new config.json
 			os.Remove(oldProxiesFile) // Clean up old file
-			log.Println("迁移成功，旧的 proxies.json 已删除。")
+			log.Println(GetText("migration_success"))
 			return
 		}
 	}
 
 	// If all else fails, create a default configuration
-	log.Println("未找到有效配置, 创建默认配置...")
+	log.Println(GetText("no_valid_config"))
 	appConfig.Proxies = []string{"socks5://127.0.0.1:7890"}
 	if len(appConfig.Proxies) > 0 {
 		appConfig.LastSelectedProxy = appConfig.Proxies[0]
@@ -425,11 +472,11 @@ func loadConfig() {
 func saveConfig() {
 	data, err := json.MarshalIndent(appConfig, "", "  ")
 	if err != nil {
-		log.Printf("无法编码 config.json: %v\n", err)
+		log.Printf(GetText("config_encode_fail")+"\n", err)
 		return
 	}
 	if err := os.WriteFile(configFile, data, 0644); err != nil {
-		log.Printf("无法写入 config.json: %v\n", err)
+		log.Printf(GetText("config_write_fail")+"\n", err)
 	}
 }
 
@@ -437,14 +484,14 @@ func saveConfig() {
 
 func startTun() error {
 	if err := prepareWintunDll(); err != nil {
-		return fmt.Errorf("准备 wintun.dll 失败: %w", err)
+		return fmt.Errorf(GetTextWithFormat("prepare_wintun_fail"), err)
 	}
 
 	mu.RLock()
 	proxy := currentProxy
 	mu.RUnlock()
 	if proxy == "" {
-		return fmt.Errorf("未选择代理服务器")
+		return fmt.Errorf(GetText("no_proxy_selected"))
 	}
 	tun2socksCmd = exec.Command("./tun2socks.exe", "-device", "wintun", "-proxy", proxy, "-loglevel", "info")
 	if runtime.GOOS == "windows" {
@@ -457,7 +504,7 @@ func startTun() error {
 	go logPipe(stderr, "TUN2SOCKS_STDERR")
 
 	if err := tun2socksCmd.Start(); err != nil {
-		return fmt.Errorf("启动 tun2socks.exe 失败: %w", err)
+		return fmt.Errorf(GetTextWithFormat("start_tun2socks_fail"), err)
 	}
 
 	if err := waitForAdapter(); err != nil {
@@ -477,10 +524,10 @@ func startTun() error {
 				delCmdStr := fmt.Sprintf("netsh interface ipv4 delete route 0.0.0.0/0 %s", tunAlias)
 				exec.Command("cmd", "/C", delCmdStr).Run()
 				if output, err := exec.Command("cmd", "/C", cmdStr).CombinedOutput(); err != nil {
-					return fmt.Errorf("执行命令 '%s' 失败: %s, %w", cmdStr, string(output), err)
+					return fmt.Errorf(GetTextWithFormat("command_exec_fail"), cmdStr, string(output), err)
 				}
 			} else {
-				return fmt.Errorf("执行命令 '%s' 失败: %s, %w", cmdStr, string(output), err)
+				return fmt.Errorf(GetTextWithFormat("command_exec_fail"), cmdStr, string(output), err)
 			}
 		}
 	}
@@ -505,7 +552,7 @@ func stopTun() error {
 	// 3. Stop the tun2socks.exe process
 	if tun2socksCmd != nil && tun2socksCmd.Process != nil {
 		if err := tun2socksCmd.Process.Kill(); err != nil {
-			return fmt.Errorf("停止 tun2socks.exe 进程失败: %w", err)
+			return fmt.Errorf(GetTextWithFormat("stop_tun2socks_fail"), err)
 		}
 		tun2socksCmd = nil
 	}
@@ -533,12 +580,12 @@ func prepareWintunDll() error {
 	if err != nil {
 		// This error is now expected in a distributed environment, but indicates a problem
 		// in a dev environment if the wintun/ folder is missing.
-		return fmt.Errorf("wintun.dll 不存在于当前目录，也无法从 %s 复制: %w", src, err)
+		return fmt.Errorf(GetTextWithFormat("wintun_not_found"), src, err)
 	}
 	if err := os.WriteFile(dst, sourceFile, 0666); err != nil {
-		return fmt.Errorf("复制 wintun.dll 失败 (%s): %w", dst, err)
+		return fmt.Errorf(GetTextWithFormat("copy_wintun_fail"), dst, err)
 	}
-	log.Println("已从开发目录复制 wintun.dll。")
+	log.Println(GetText("copy_wintun_success"))
 	return nil
 }
 
@@ -547,17 +594,17 @@ func waitForAdapter() error {
 	for time.Now().Before(deadline) {
 		interfaces, err := net.Interfaces()
 		if err != nil {
-			return fmt.Errorf("获取网络接口失败: %w", err)
+			return fmt.Errorf(GetTextWithFormat("get_interfaces_fail"), err)
 		}
 		for _, i := range interfaces {
 			if i.Name == tunAlias {
-				log.Printf("网络适配器 '%s' 已找到\n", tunAlias)
+				log.Printf(GetText("adapter_found")+"\n", tunAlias)
 				return nil
 			}
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	return fmt.Errorf("等待网络适配器 '%s' 超时", tunAlias)
+	return fmt.Errorf(GetTextWithFormat("wait_adapter_timeout"), tunAlias)
 }
 
 func logPipe(pipe io.ReadCloser, prefix string) {
