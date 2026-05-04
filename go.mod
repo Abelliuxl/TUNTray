@@ -5,7 +5,7 @@ go 1.25.1
 require (
 	github.com/getlantern/systray v1.2.2
 	github.com/ncruces/zenity v0.10.14
-	golang.org/x/text v0.18.0
+	golang.org/x/sys v0.25.0
 )
 
 require (
@@ -22,5 +22,4 @@ require (
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c // indirect
 	github.com/randall77/makefat v0.0.0-20210315173500-7ddd0e42c844 // indirect
 	golang.org/x/image v0.20.0 // indirect
-	golang.org/x/sys v0.25.0 // indirect
 )

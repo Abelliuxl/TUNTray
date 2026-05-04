@@ -18,6 +18,7 @@ import (
 
 	"github.com/getlantern/systray"
 	"github.com/ncruces/zenity"
+	"golang.org/x/sys/windows/registry"
 )
 
 // --- Constants ---
@@ -32,9 +33,10 @@ const (
 
 // --- App Configuration ---
 type AppConfig struct {
-	Proxies           []string `json:"proxies"`
-	LastSelectedProxy string   `json:"last_selected_proxy"`
-	Language          Language `json:"language"`
+	Proxies              []string `json:"proxies"`
+	LastSelectedProxy    string   `json:"last_selected_proxy"`
+	Language             Language `json:"language"`
+	SystemProxyEnabled   bool     `json:"system_proxy_enabled"`
 }
 
 // initializeLanguage sets up the language based on config or system default
@@ -75,6 +77,7 @@ var (
 	currentProxy         string
 	mStart               *systray.MenuItem
 	mStop                *systray.MenuItem
+	mSystemProxy         *systray.MenuItem
 	mSelectProxy         *systray.MenuItem
 	mDeleteProxy         *systray.MenuItem
 	mManageProxies       *systray.MenuItem
@@ -85,6 +88,7 @@ var (
 	deleteProxyMenuItems map[string]*systray.MenuItem
 	mu                   sync.RWMutex
 	logFile              *os.File
+	systemProxyEnabled   bool
 )
 
 //go:embed winres/icon.ico
@@ -141,6 +145,20 @@ func onReady() {
 
 	mStart = systray.AddMenuItem(GetText("start"), GetText("start_tooltip"))
 	mStop = systray.AddMenuItem(GetText("stop"), GetText("stop_tooltip"))
+	systray.AddSeparator()
+
+	// --- System Proxy Toggle ---
+	mSystemProxy = systray.AddMenuItem(GetText("system_proxy"), GetText("system_proxy_tooltip"))
+
+	// Restore system proxy state from config
+	if appConfig.SystemProxyEnabled {
+		systemProxyEnabled = true
+		mSystemProxy.Check()
+		if currentProxy != "" {
+			applySystemProxy(currentProxy)
+		}
+	}
+
 	systray.AddSeparator()
 
 	// --- Select Proxy Menu ---
@@ -220,6 +238,8 @@ func onReady() {
 				handleStart()
 			case <-mStop.ClickedCh:
 				handleStop()
+			case <-mSystemProxy.ClickedCh:
+				toggleSystemProxy()
 			case <-mQuit.ClickedCh:
 				systray.Quit()
 				return
@@ -293,27 +313,77 @@ func setProxy(proxyAddr string) {
 			item.Uncheck()
 		}
 	}
+
+	// If system proxy is enabled, update it with the new proxy address
+	if systemProxyEnabled {
+		applySystemProxy(proxyAddr)
+	}
 }
 
 func addNewProxy() {
-	newProxy, err := zenity.Entry(GetText("add_proxy_prompt"),
-		zenity.Title(GetText("add_proxy_title")),
-		zenity.EntryText(""))
+	// Step 1: Select protocol
+	protocol, err := zenity.List(
+		GetText("add_proxy_protocol_prompt"),
+		[]string{"socks5", "http", "https", "socks4"},
+		zenity.Title(GetText("add_proxy_protocol_title")),
+	)
 	if err != nil {
-		if err == zenity.ErrCanceled {
-			log.Println(GetText("user_cancelled"))
-		} else {
+		if err != zenity.ErrCanceled {
 			log.Printf(GetText("cannot_open_input")+"\n", err)
 		}
 		return
 	}
 
-	newProxy = strings.TrimSpace(newProxy)
-	if newProxy == "" {
-		log.Println(GetText("proxy_empty_error"))
-		zenity.Warning(GetText("proxy_empty_error"), zenity.Title(GetText("input_invalid")))
+	// Step 2: Enter address
+	address, err := zenity.Entry(
+		GetText("add_proxy_address_prompt"),
+		zenity.Title(GetText("add_proxy_address_title")),
+		zenity.EntryText(""),
+	)
+	if err != nil {
+		if err != zenity.ErrCanceled {
+			log.Printf(GetText("cannot_open_input")+"\n", err)
+		}
 		return
 	}
+	address = strings.TrimSpace(address)
+	if address == "" {
+		log.Println(GetText("proxy_address_empty_error"))
+		zenity.Warning(GetText("proxy_address_empty_error"), zenity.Title(GetText("input_invalid")))
+		return
+	}
+
+	// Step 3: Enter port (with protocol-aware default)
+	var defaultPort string
+	switch protocol {
+	case "http":
+		defaultPort = "80"
+	case "https":
+		defaultPort = "443"
+	case "socks5", "socks4":
+		defaultPort = "1080"
+	default:
+		defaultPort = "7890"
+	}
+	port, err := zenity.Entry(
+		GetText("add_proxy_port_prompt"),
+		zenity.Title(GetText("add_proxy_port_title")),
+		zenity.EntryText(defaultPort),
+	)
+	if err != nil {
+		if err != zenity.ErrCanceled {
+			log.Printf(GetText("cannot_open_input")+"\n", err)
+		}
+		return
+	}
+	port = strings.TrimSpace(port)
+	if port == "" {
+		log.Println(GetText("proxy_port_empty_error"))
+		zenity.Warning(GetText("proxy_port_empty_error"), zenity.Title(GetText("input_invalid")))
+		return
+	}
+
+	newProxy := fmt.Sprintf("%s://%s:%s", protocol, address, port)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -721,5 +791,106 @@ func refreshUITexts() {
 	systray.SetTitle(GetText("app_title"))
 	systray.SetTooltip(GetText("app_tooltip"))
 
+	if mSystemProxy != nil {
+		mSystemProxy.SetTitle(GetText("system_proxy"))
+		mSystemProxy.SetTooltip(GetText("system_proxy_tooltip"))
+	}
+
 	log.Println("UI texts refreshed successfully")
+}
+
+// --- System Proxy Management ---
+
+// formatProxyForWindows strips the protocol prefix from a proxy address
+// for use in Windows system proxy settings.
+func formatProxyForWindows(proxyAddr string) string {
+	for _, prefix := range []string{"http://", "https://", "socks5://", "socks4://", "socks://"} {
+		if strings.HasPrefix(proxyAddr, prefix) {
+			return proxyAddr[len(prefix):]
+		}
+	}
+	return proxyAddr
+}
+
+// notifyProxyChange broadcasts the proxy setting change to Windows
+// so that running applications pick up the new settings immediately.
+func notifyProxyChange() {
+	wininet := syscall.NewLazyDLL("wininet.dll")
+	internetSetOption := wininet.NewProc("InternetSetOptionW")
+	internetSetOption.Call(0, 39, 0, 0) // INTERNET_OPTION_SETTINGS_CHANGED
+	internetSetOption.Call(0, 40, 0, 0) // INTERNET_OPTION_REFRESH
+}
+
+// applySystemProxy sets the Windows system proxy to the given address.
+// Must be called with mu held (or from a context where mu is not needed).
+func applySystemProxy(proxyAddr string) {
+	k, err := registry.OpenKey(registry.CURRENT_USER,
+		`Software\Microsoft\Windows\CurrentVersion\Internet Settings`,
+		registry.SET_VALUE)
+	if err != nil {
+		log.Printf("Failed to open registry for system proxy: %v\n", err)
+		return
+	}
+	defer k.Close()
+
+	addr := formatProxyForWindows(proxyAddr)
+	if err := k.SetDWordValue("ProxyEnable", 1); err != nil {
+		log.Printf("Failed to enable system proxy: %v\n", err)
+		return
+	}
+	if err := k.SetStringValue("ProxyServer", addr); err != nil {
+		log.Printf("Failed to set proxy server: %v\n", err)
+		return
+	}
+	notifyProxyChange()
+	log.Printf("System proxy set to: %s\n", proxyAddr)
+}
+
+// clearSystemProxy disables the Windows system proxy.
+func clearSystemProxy() {
+	k, err := registry.OpenKey(registry.CURRENT_USER,
+		`Software\Microsoft\Windows\CurrentVersion\Internet Settings`,
+		registry.SET_VALUE)
+	if err != nil {
+		log.Printf("Failed to open registry for system proxy: %v\n", err)
+		return
+	}
+	defer k.Close()
+
+	if err := k.SetDWordValue("ProxyEnable", 0); err != nil {
+		log.Printf("Failed to disable system proxy: %v\n", err)
+		return
+	}
+	notifyProxyChange()
+	log.Println("System proxy disabled")
+}
+
+// toggleSystemProxy toggles the system proxy on/off.
+func toggleSystemProxy() {
+	mu.Lock()
+	if systemProxyEnabled {
+		// Disable system proxy
+		clearSystemProxy()
+		systemProxyEnabled = false
+		appConfig.SystemProxyEnabled = false
+		mSystemProxy.Uncheck()
+		saveConfig()
+		mu.Unlock()
+		return
+	}
+
+	// Enable system proxy
+	if currentProxy == "" {
+		mu.Unlock()
+		zenity.Error(GetText("no_proxy_selected"),
+			zenity.Title(GetText("system_proxy")))
+		return
+	}
+
+	applySystemProxy(currentProxy)
+	systemProxyEnabled = true
+	appConfig.SystemProxyEnabled = true
+	mSystemProxy.Check()
+	saveConfig()
+	mu.Unlock()
 }

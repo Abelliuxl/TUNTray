@@ -9,8 +9,9 @@
 ## 功能
 
 -   通过系统托盘图标启动和停止 TUN 流量转发。
+-   **系统代理模式**：无需启动 TUN，直接设置 Windows 系统代理到所选地址（可勾选开关）。
 -   在预设的代理服务器列表中进行选择。
--   通过图形界面添加和删除代理服务器。
+-   通过图形界面添加和删除代理服务器（支持选择协议、地址和端口分步填写）。
 -   程序启动时自动请求管理员权限。
 
 ## 演示 (Demo)
@@ -40,15 +41,18 @@
 
 ## 配置
 
-应用程序通过 `proxies.json` 文件管理代理列表。如果文件不存在，程序会创建一个包含默认代理的示例文件。
-
-文件格式为一个 JSON 数组，其中包含代理服务器的地址字符串：
+应用程序通过 `config.json` 文件保存配置。如果文件不存在，程序会在首次运行时自动创建。
 
 ```json
-[
-  "http://192.168.5.101:7890",
-  "socks5://127.0.0.1:1080"
-]
+{
+  "proxies": [
+    "http://192.168.5.101:7890",
+    "socks5://127.0.0.1:1080"
+  ],
+  "last_selected_proxy": "socks5://127.0.0.1:1080",
+  "language": 1,
+  "system_proxy_enabled": false
+}
 ```
 
 ## 构建说明
@@ -103,8 +107,9 @@ This project is essentially a user-friendly wrapper, with the core functionality
 ## Features
 
 -   Start and stop TUN traffic forwarding via the system tray icon.
+-   **System Proxy Mode**: Set Windows system proxy to the selected address without starting TUN (toggle on/off).
 -   Select from a preset list of proxy servers.
--   Add and remove proxy servers through a graphical interface.
+-   Add and remove proxy servers through a graphical interface (step-by-step: protocol, address, port).
 -   Automatically requests administrator privileges on startup.
 
 ## Demo
@@ -134,15 +139,18 @@ This project is essentially a user-friendly wrapper, with the core functionality
 
 ## Configuration
 
-The application manages the proxy list through a `proxies.json` file. If the file does not exist, the program will create a sample file containing default proxies.
-
-The file format is a JSON array of proxy server address strings:
+The application saves configuration in `config.json`. It is automatically created on first run if it does not exist.
 
 ```json
-[
-  "http://192.168.5.101:7890",
-  "socks5://127.0.0.1:1080"
-]
+{
+  "proxies": [
+    "http://192.168.5.101:7890",
+    "socks5://127.0.0.1:1080"
+  ],
+  "last_selected_proxy": "socks5://127.0.0.1:1080",
+  "language": 1,
+  "system_proxy_enabled": false
+}
 ```
 
 ## Build Instructions
